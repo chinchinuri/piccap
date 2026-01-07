@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Українською (YOLO + Caption + Translation)</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; padding: 20px; max-width: 900px; margin: 0 auto; background-color: #f4f7f6; color: #333; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h1 { margin-top: 0; color: #2c3e50; }
+        
+        button { background: #007bff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; transition: 0.2s; font-weight: 600; }
+        button:disabled { background: #cbd5e0; cursor: not-allowed; }
+        button.success { background: #28a745; }
+        button.secondary { background: #6c757d; margin-top: 10px; }
+
+        #log { height: 250px; overflow-y: auto; background: #1e1e1e; color: #00ff9d; padding: 15px; font-family: 'Consolas', monospace; border-radius: 8px; margin-top: 15px; font-size: 13px; border: 1px solid #333; }
+        
+        .progress-container { width: 100%; background: #e2e8f0; height: 24px; border-radius: 12px; margin: 15px 0; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #007bff, #00c6ff); width: 0%; transition: width 0.3s; }
+        
+        .stat-box { display: flex; gap: 30px; margin-bottom: 15px; font-weight: bold; font-size: 1.1em; }
+        
+        #resultModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: white; padding: 20px; width: 80%; height: 80%; border-radius: 10px; display: flex; flex-direction: column; }
+        textarea { width: 100%; height: 100%; margin-top: 10px; font-family: monospace; border: 1px solid #ccc; border-radius: 5px; padding: 10px; resize: none; font-size: 14px; }
+        .close-btn { align-self: flex-end; cursor: pointer; font-size: 20px; font-weight: bold; color: #555; background: #eee; padding: 5px 15px; border-radius: 5px; }
+        .close-btn:hover { background: #ddd; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>🇺🇦 AI Обробка Зображень</h1>
+        <p>Система виконує три дії локально:</p>
+        <ol style="margin-top: 0;">
+            <li>Знаходить об'єкти (YOLO) та підписує українською.</li>
+            <li>Генерує опис сцени (Captioning).</li>
+            <li>Перекладає опис українською мовою.</li>
+        </ol>
+        
+        <div id="modelStatus" style="margin-bottom: 15px; font-weight: bold; color: #d69e2e;">⏳ Зачекайте, завантажую моделі (це може зайняти хвилину)...</div>
+        <button id="folderBtn" disabled>📂 Обрати папку</button>
+    </div>
+
+    <div class="card" id="processingArea" style="display:none;">
+        <div class="stat-box">
+            <div>Всього: <span id="totalCount">0</span></div>
+            <div>Оброблено: <span id="processedCount">0</span></div>
+        </div>
+        <div class="progress-container"><div class="progress-fill" id="progressFill"></div></div>
+        <div id="log"></div>
+        <button id="viewResultsBtn" class="secondary" style="display:none;">📄 Відкрити звіт (JSON)</button>
+    </div>
+
+    <!-- Модальне вікно -->
+    <div id="resultModal">
+        <div class="modal-content">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3>Результат (results.json)</h3>
+                <span class="close-btn" id="closeModal">Закрити</span>
+            </div>
+            <textarea id="jsonViewer" readonly></textarea>
+        </div>
+    </div>
+
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.14.0';
+
+        // --- 1. Словник для об'єктів (COCO classes -> Українська) ---
+        const OBJECT_TRANSLATION = {
+            "person": "людина", "bicycle": "велосипед", "car": "авто", "motorcycle": "мотоцикл", "airplane": "літак",
+            "bus": "автобус", "train": "потяг", "truck": "вантажівка", "boat": "човен", "traffic light": "світлофор",
+            "fire hydrant": "гідрант", "stop sign": "знак стоп", "parking meter": "паркомат", "bench": "лавка",
+            "bird": "птах", "cat": "кіт", "dog": "собака", "horse": "кінь", "sheep": "вівця", "cow": "корова",
+            "elephant": "слон", "bear": "ведмідь", "zebra": "зебра", "giraffe": "жирафа", "backpack": "рюкзак",
+            "umbrella": "парасоля", "handbag": "сумка", "tie": "краватка", "suitcase": "валіза", "frisbee": "фрізбі",
+            "skis": "лижі", "snowboard": "сноуборд", "sports ball": "м'яч", "kite": "повітряний змій", "baseball bat": "бита",
+            "baseball glove": "рукавиця", "skateboard": "скейт", "surfboard": "серф", "tennis racket": "ракетка",
+            "bottle": "пляшка", "wine glass": "келих", "cup": "чашка", "fork": "виделка", "knife": "ніж", "spoon": "ложка",
+            "bowl": "миска", "banana": "банан", "apple": "яблуко", "sandwich": "сендвіч", "orange": "апельсин",
+            "broccoli": "броколі", "carrot": "морква", "hot dog": "хот-дог", "pizza": "піца", "donut": "пончик",
+            "cake": "торт", "chair": "стілець", "couch": "диван", "potted plant": "вазон", "bed": "ліжко",
+            "dining table": "стіл", "toilet": "туалет", "tv": "телевізор", "laptop": "ноутбук", "mouse": "миша",
+            "remote": "пульт", "keyboard": "клавіатура", "cell phone": "телефон", "microwave": "мікрохвильовка",
+            "oven": "піч", "toaster": "тостер", "sink": "раковина", "refrigerator": "холодильник", "book": "книга",
+            "clock": "годинник", "vase": "ваза", "scissors": "ножиці", "teddy bear": "ведмедик", "hair drier": "фен",
+            "toothbrush": "щітка"
+        };
+
+        env.allowLocalModels = false;
+        env.useBrowserCache = true;
+
+        const modelStatus = document.getElementById('modelStatus');
+        const folderBtn = document.getElementById('folderBtn');
+        const logDiv = document.getElementById('log');
+        const progressFill = document.getElementById('progressFill');
+        const processingArea = document.getElementById('processingArea');
+        const totalCountSpan = document.getElementById('totalCount');
+        const processedCountSpan = document.getElementById('processedCount');
+        const viewResultsBtn = document.getElementById('viewResultsBtn');
+        const resultModal = document.getElementById('resultModal');
+        const jsonViewer = document.getElementById('jsonViewer');
+        const closeModal = document.getElementById('closeModal');
+
+        let detector = null;
+        let captioner = null;
+        let translator = null;
+        let savedJsonHandle = null;
+
+        function log(msg) {
+            logDiv.textContent += `> ${msg}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // --- 2. Завантаження моделей ---
+        async function loadModels() {
+            try {
+                log("1/3 Завантаження детектора (YOLOS)...");
+                detector = await pipeline('object-detection', 'Xenova/yolos-tiny');
+                
+                log("2/3 Завантаження генератора описів (ViT-GPT2)...");
+                captioner = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning');
+
+                log("3/3 Завантаження перекладача (EN -> UK)...");
+                // Використовуємо Opus-MT для перекладу речень
+                translator = await pipeline('translation', 'Xenova/opus-mt-en-uk');
+
+                modelStatus.textContent = '✅ Всі системи готові. Можна працювати.';
+                modelStatus.style.color = 'green';
+                folderBtn.disabled = false;
+            } catch (err) {
+                modelStatus.textContent = '❌ Помилка завантаження: ' + err.message;
+                log('Деталі: ' + err);
+            }
+        }
+        loadModels();
+
+        folderBtn.addEventListener('click', async () => {
+            if (!window.showDirectoryPicker) { alert("Потрібен Chrome/Edge."); return; }
+
+            try {
+                const dirHandle = await window.showDirectoryPicker();
+                const opts = { mode: 'readwrite' };
+                if ((await dirHandle.queryPermission(opts)) !== 'granted') {
+                    if ((await dirHandle.requestPermission(opts)) !== 'granted') return;
+                }
+
+                processingArea.style.display = 'block';
+                folderBtn.disabled = true;
+                
+                const processedDirHandle = await dirHandle.getDirectoryHandle('processed_ua', { create: true });
+
+                const images = [];
+                for await (const entry of dirHandle.values()) {
+                    if (entry.kind === 'file' && entry.name.match(/\.(jpg|jpeg|png|webp)$/i)) {
+                        images.push(entry);
+                    }
+                }
+
+                totalCountSpan.textContent = images.length;
+                let processedCount = 0;
+                const jsonResults = [];
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                for (const fileHandle of images) {
+                    const file = await fileHandle.getFile();
+                    const url = URL.createObjectURL(file);
+                    
+                    try {
+                        const img = new Image();
+                        await new Promise((r, e) => { img.onload = r; img.onerror = e; img.src = url; });
+
+                        // --- ПАРАЛЕЛЬНИЙ ЗАПУСК ---
+                        const [detOutput, capOutput] = await Promise.all([
+                            detector(url, { threshold: 0.5, percentage: true }),
+                            captioner(url)
+                        ]);
+
+                        // --- ПЕРЕКЛАД ОПИСУ ---
+                        const engDesc = capOutput[0].generated_text;
+                        let ukrDesc = engDesc;
+                        try {
+                            const transOutput = await translator(engDesc);
+                            ukrDesc = transOutput[0].translation_text;
+                        } catch (e) {
+                            console.warn("Помилка перекладу опису", e);
+                        }
+
+                        // --- МАЛЮВАННЯ ---
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx.drawImage(img, 0, 0);
+                        
+                        ctx.lineWidth = 3;
+                        ctx.font = 'bold 20px Arial'; // Збільшений шрифт
+                        ctx.textBaseline = 'top';
+
+                        const detectedObjects = [];
+
+                        detOutput.forEach(pred => {
+                            let { box, label, score } = pred;
+                            
+                            // 1. ВИПРАВЛЕННЯ КООРДИНАТ (Fix bugs)
+                            // Якщо координати нормалізовані (0-1), масштабуємо їх
+                            let { xmax, xmin, ymax, ymin } = box;
+                            if (xmax <= 1.05 && ymax <= 1.05) { 
+                                xmin *= img.width; xmax *= img.width;
+                                ymin *= img.height; ymax *= img.height;
+                            }
+
+                            // 2. ПЕРЕКЛАД ОБ'ЄКТА
+                            const labelUkr = OBJECT_TRANSLATION[label] || label;
+                            
+                            // Колір рамки (випадковий яскравий)
+                            const color = `hsl(${Math.random() * 360}, 100%, 50%)`;
+
+                            // Рамка (пунктир)
+                            ctx.setLineDash([10, 5]);
+                            ctx.strokeStyle = color;
+                            ctx.strokeRect(xmin, ymin, xmax - xmin, ymax - ymin);
+                            
+                            // Фон для тексту (суцільний)
+                            ctx.setLineDash([]);
+                            const text = `${labelUkr}`;
+                            const txtMetrics = ctx.measureText(text);
+                            const txtH = 24; 
+                            
+                            // Перевірка, щоб текст не виліз за межі зверху
+                            let textY = ymin - txtH;
+                            if (textY < 0) textY = ymin; 
+
+                            ctx.fillStyle = color;
+                            ctx.fillRect(xmin, textY, txtMetrics.width + 10, txtH);
+                            
+                            // Текст
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillText(text, xmin + 5, textY + 2);
+
+                            detectedObjects.push({
+                                label: labelUkr,
+                                score: score,
+                                box: { xmin, ymin, xmax, ymax }
+                            });
+                        });
+
+                        // Збереження обробленої картинки
+                        const blob = await new Promise(r => canvas.toBlob(r, file.type));
+                        const newFileHandle = await processedDirHandle.getFileHandle(file.name, { create: true });
+                        const writable = await newFileHandle.createWritable();
+                        await writable.write(blob);
+                        await writable.close();
+
+                        // JSON запис
+                        jsonResults.push({
+                            filename: file.name,
+                            description_uk: ukrDesc,
+                            description_en: engDesc,
+                            objects: detectedObjects
+                        });
+
+                        log(`[OK] ${file.name}: ${ukrDesc}`);
+
+                    } catch (err) {
+                        log(`[ERR] ${file.name}: ${err.message}`);
+                        console.error(err);
+                    } finally {
+                        URL.revokeObjectURL(url);
+                        processedCount++;
+                        processedCountSpan.textContent = processedCount;
+                        progressFill.style.width = `${(processedCount / images.length) * 100}%`;
+                    }
+                }
+
+                // Збереження JSON
+                savedJsonHandle = await dirHandle.getFileHandle('results_ukr.json', { create: true });
+                const writable = await savedJsonHandle.createWritable();
+                await writable.write(JSON.stringify(jsonResults, null, 2));
+                await writable.close();
+
+                log("🎉 Готово! Перевірте папку processed_ua та файл results_ukr.json");
+                folderBtn.textContent = "Завершено успішно";
+                folderBtn.classList.add('success');
+                viewResultsBtn.style.display = 'inline-block';
+
+            } catch (err) {
+                console.error(err);
+                if (err.name !== 'AbortError') log("CRITICAL ERROR: " + err.message);
+                folderBtn.disabled = false;
+            }
+        });
+
+        viewResultsBtn.addEventListener('click', async () => {
+            if (!savedJsonHandle) return;
+            try {
+                const file = await savedJsonHandle.getFile();
+                const text = await file.text();
+                jsonViewer.value = text;
+                resultModal.style.display = 'flex';
+            } catch (err) { alert(err.message); }
+        });
+
+        closeModal.addEventListener('click', () => resultModal.style.display = 'none');
+    </script>
+</body>
+</html>
